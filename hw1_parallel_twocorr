@@ -1,0 +1,123 @@
+#
+#3. Numerical Integration : 2pt correlation func 
+#
+
+
+import numpy as np
+from mpi4py import MPI as mpi
+import string
+import sys
+import time
+import matplotlib.pyplot as plt
+#from colossus.cosmology import cosmology
+from scipy.interpolate import UnivariateSpline
+import cPickle
+
+
+
+
+
+comm = mpi.COMM_WORLD
+rank = comm.Get_rank()
+size = comm.Get_size()
+
+
+
+
+########################################################
+def weight(x):
+    w = (3/(x**3))*(np.sin(x)-(x*np.cos(x)))
+    return w
+
+def summ(range1):
+    global sumf
+    sumf = 0
+    for x in range1:
+        sumf = sumf + f(x) 
+    return sumf
+    
+def trap_oper(f,h,k,m,a,b):
+    if m == 0:
+        hd = h/2.**k
+        xi = np.arange(a+hd, b-hd, hd)
+        dummy = 0.5*hd*(f(a) + f(b)) + hd*summ(xi)
+    else:
+        fact = 4.**m
+        dummy = (fact*trap_oper(f, h, k+1, m-1,a,b) - trap_oper(f, h, k, m-1,a,b))/(fact-1.)
+    return dummy
+
+################################################################
+f1 = open('power_spectrum.dat','rb')
+p = cPickle.load(f1)
+f1.close()
+################################################################
+################################################################
+Rmin = 0.01
+Rmax = 3000
+
+
+start_time = time.time()
+Rlist = np.logspace(np.log10(Rmin),np.log10(Rmax),100)
+print Rlist
+
+#twocorr_parallel=[]
+
+a=10**-30.
+b=100.
+c = 1/(2*np.pi**2)
+epsilon = 10**-4
+h = 0.01
+
+n = (b-a)/h
+local_n = n/size
+
+local_a = a + rank*local_n*h
+local_b = local_a + local_n*h
+
+integral_new = np.zeros(1)
+total = np.zeros(1)
+#integral_old = np.zeros(1)
+twocorr_parallel=[]
+
+for R in Rlist:
+    #print 'R is', R
+    m=0
+    k=0
+    
+    #x = ka*R;
+    f = lambda k: (np.sin(k*R)/(k*R))*(k**2)*p(k)
+    #f  = UnivariateSpline(ka, func, s=0.0)
+    
+    relative = 10**20 #dummymod
+    integral_old = 0.1 #dummy
+    
+    while relative > epsilon:
+        integral_new[0] = c*trap_oper(f,h,m,k,local_a,local_b)
+        comm.Reduce(integral_new, total, op=mpi.SUM, root=0)
+        relative = np.abs(total-integral_old)/integral_old
+        integral_old = total
+        m+=1
+   
+    #print 'Integral done'
+    if comm.rank == 0:
+        print 'For R = %.4f, integral is %.4e' %(R,total)
+    
+    twocorr_parallel.append(total)
+    
+print("--- %s seconds ---" % (time.time() - start_time))
+
+
+
+plt.figure(figsize=(6,3))
+plt.xscale('log'); 
+plt.yscale('log')
+#plt.ylim(1.e-2, 1.e5); plt.xlim(1.e-4, 1.e2)
+plt.plot(Rlist, np.abs(twocorr_parallel) , '-', c='slateblue', linewidth=2., label=r'$\mathrm{Two\ pt\ correlation\ function}$')
+#plt.plot(ka, spl(ka), lw=0.75, c='r', label='$\mathrm{P(k)\ :\ Spline}$')
+plt.xlabel(r'$R$')
+plt.ylabel(r'$\mathrm{\xi}$')
+plt.grid()
+plt.savefig('fig_twocorr.pdf', bbox_inches='tight')
+plt.show()
+
+################################################################
